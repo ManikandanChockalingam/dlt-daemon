@@ -742,6 +742,8 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
 
     uint32_t sid;
 
+    DltDaemonRegisteredUsers* user_list = NULL;
+
     PRINT_FUNCTION_VERBOSE(verbose);
 
     if ((daemon == NULL) || (msg == NULL) || (msg->databuffer == NULL))
@@ -750,6 +752,12 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
     }
 
     if (DLT_CHECK_RCV_DATA_SIZE(msg->datasize, sizeof(DltServiceGetLogInfoRequest)) < 0)
+    {
+        return;
+    }
+
+    user_list = dlt_daemon_find_users_list(daemon, daemon->ecuid, verbose);
+    if (user_list == NULL)
     {
         return;
     }
@@ -773,13 +781,20 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
 
     if (req->apid[0]!='\0')
     {
-        application = dlt_daemon_application_find(daemon, req->apid, verbose);
+        application = dlt_daemon_application_find(daemon,
+                                                  req->apid,
+                                                  daemon->ecuid,
+                                                  verbose);
         if (application)
         {
             num_applications = 1;
             if (req->ctid[0]!='\0')
             {
-                context = dlt_daemon_context_find(daemon, req->apid, req->ctid, verbose);
+                context = dlt_daemon_context_find(daemon,
+                                                  req->apid,
+                                                  req->ctid,
+                                                  daemon->ecuid,
+                                                  verbose);
 
                 num_contexts = ((context)?1:0);
             }
@@ -797,8 +812,8 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
     else
     {
         /* Request all applications and contexts */
-        num_applications = daemon->num_applications;
-        num_contexts = daemon->num_contexts;
+        num_applications = user_list->num_applications;
+        num_contexts = user_list->num_contexts;
     }
 
     /* prepare payload of data */
@@ -846,20 +861,20 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
             else
             {
                 /* One application, all contexts */
-                if ((daemon->applications) && (application))
+                if ((user_list->applications) && (application))
                 {
                     /* Calculate start offset within contexts[] */
                     offset_base=0;
-                    for (i=0; i<(application-(daemon->applications)); i++)
+                    for (i = 0; i < (application - (user_list->applications)); i++)
                     {
-                        offset_base+=daemon->applications[i].num_contexts;
+                        offset_base += user_list->applications[i].num_contexts;
                     }
 
                     /* Iterate over all contexts belonging to this application */
                     for (j=0;j<application->num_contexts;j++)
                     {
 
-                        context = &(daemon->contexts[offset_base+j]);
+                        context = &(user_list->contexts[offset_base + j]);
                         if (context)
                         {
                             resp.datasize+=sizeof(uint16_t) /* len_context_description */;
@@ -885,21 +900,22 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
         else
         {
             /* All applications, all contexts */
-            for (i=0;i<daemon->num_contexts;i++)
+            for (i = 0; i < user_list->num_contexts; i++)
             {
                 resp.datasize+=sizeof(uint16_t) /* len_context_description */;
-                if (daemon->contexts[i].context_description!=0)
+                if (user_list->contexts[i].context_description != 0)
                 {
-                    resp.datasize+=strlen(daemon->contexts[i].context_description); /* context_description */
+                    resp.datasize +=
+                            strlen(user_list->contexts[i].context_description);
                 }
             }
 
-            for (i=0;i<daemon->num_applications;i++)
+            for (i = 0; i < user_list->num_applications; i++)
             {
-                resp.datasize+=sizeof(uint16_t) /* len_app_description */;
-                if (daemon->applications[i].application_description!=0)
+                resp.datasize += sizeof(uint16_t) /* len_app_description */;
+                if (user_list->applications[i].application_description != 0)
                 {
-                    resp.datasize+=strlen(daemon->applications[i].application_description); /* app_description */
+                    resp.datasize += strlen(user_list->applications[i].application_description); /* app_description */
                 }
             }
         }
@@ -907,8 +923,9 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
 
     if (verbose)
     {
-        snprintf(str,DLT_DAEMON_TEXTBUFSIZE,"Allocate %d bytes for response msg databuffer\n", resp.datasize);
-        dlt_log(LOG_DEBUG, str);
+        dlt_vlog(LOG_DEBUG,
+                 "Allocate %d bytes for response msg databuffer\n",
+                 resp.datasize);
     }
 
     /* Allocate buffer for response message */
@@ -953,9 +970,9 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
             }
             else
             {
-                if (daemon->applications)
+                if (user_list->applications)
                 {
-                    apid = daemon->applications[i].apid;
+                    apid = user_list->applications[i].apid;
                 }
                 else
                 {
@@ -964,19 +981,22 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
                 }
             }
 
-            application = dlt_daemon_application_find(daemon, apid, verbose);
+            application = dlt_daemon_application_find(daemon,
+                                                      apid,
+                                                      daemon->ecuid,
+                                                      verbose);
 
             if (application)
             {
                 /* Calculate start offset within contexts[] */
                 offset_base=0;
-                for (j=0; j<(application-(daemon->applications)); j++)
+                for (j = 0; j < (application-(user_list->applications)); j++)
                 {
-                    offset_base+=daemon->applications[j].num_contexts;
+                    offset_base += user_list->applications[j].num_contexts;
                 }
 
-                dlt_set_id((char*)(resp.databuffer+offset),apid);
-                offset+=sizeof(ID4);
+                dlt_set_id((char*)(resp.databuffer + offset), apid);
+                offset += sizeof(ID4);
 
 #if (DLT_DEBUG_GETLOGINFO==1)
                 dlt_print_id(buf, apid);
@@ -984,7 +1004,7 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
                 dlt_log(LOG_DEBUG, str);
 #endif
 
-                if (req->apid[0]!='\0')
+                if (req->apid[0] != '\0')
                 {
                     count_con_ids = num_contexts;
                 }
@@ -993,34 +1013,35 @@ void dlt_daemon_control_get_log_info(int sock, DltDaemon *daemon, DltDaemonLocal
                     count_con_ids = application->num_contexts;
                 }
 
-                memcpy(resp.databuffer+offset,&count_con_ids,sizeof(uint16_t));
-                offset+=sizeof(uint16_t);
+                memcpy(resp.databuffer + offset,&count_con_ids, sizeof(uint16_t));
+                offset += sizeof(uint16_t);
 
 #if (DLT_DEBUG_GETLOGINFO==1)
                 snprintf(str,DLT_DAEMON_TEXTBUFSIZE,"#ctid: %d \n", count_con_ids);
                 dlt_log(LOG_DEBUG, str);
 #endif
 
-                for (j=0;j<count_con_ids;j++)
+                for (j = 0;j < count_con_ids; j++)
                 {
 #if (DLT_DEBUG_GETLOGINFO==1)
                     snprintf(str,DLT_DAEMON_TEXTBUFSIZE,"j: %d \n",j);
                     dlt_log(LOG_DEBUG, str);
 #endif
-                    if (!((count_con_ids==1) && (req->apid[0]!='\0') && (req->ctid[0]!='\0')))
+                    if (!((count_con_ids == 1) && (req->apid[0] != '\0') &&
+                        (req->ctid[0] != '\0')))
                     {
-                        context = &(daemon->contexts[offset_base+j]);
+                        context = &(user_list->contexts[offset_base + j]);
                     }
                     /* else: context was already searched and found
                              (one application (found) with one context (found))*/
 
                     if ((context) &&
-                            ((req->ctid[0]=='\0') ||
-                             ((req->ctid[0]!='\0') && (memcmp(context->ctid,req->ctid,DLT_ID_SIZE)==0)))
+                        ((req->ctid[0]=='\0') || ((req->ctid[0]!='\0') &&
+                        (memcmp(context->ctid,req->ctid,DLT_ID_SIZE)==0)))
                        )
                     {
-                        dlt_set_id((char*)(resp.databuffer+offset),context->ctid);
-                        offset+=sizeof(ID4);
+                        dlt_set_id((char*)(resp.databuffer+offset), context->ctid);
+                        offset += sizeof(ID4);
 
 #if (DLT_DEBUG_GETLOGINFO==1)
                         dlt_print_id(buf, context->ctid);
@@ -1474,7 +1495,11 @@ void dlt_daemon_control_callsw_cinjection(int sock, DltDaemon *daemon, DltDaemon
         }
 
         /* At this point, apid and ctid is available */
-        context=dlt_daemon_context_find(daemon, apid, ctid, verbose);
+        context = dlt_daemon_context_find(daemon,
+                                          apid,
+                                          ctid,
+                                          daemon->ecuid,
+                                          verbose);
 
         if (context==0)
         {
@@ -1574,15 +1599,22 @@ void dlt_daemon_find_multiple_context_and_send(int sock, DltDaemon *daemon, DltD
     DltDaemonContext *context = NULL;
     char src_str[DLT_ID_SIZE +1] = {0};
     int8_t ret = 0;
+    DltDaemonRegisteredUsers* user_list = NULL;
 
     if (daemon == 0)
     {
         return;
     }
 
-    for (count = 0; count < daemon->num_contexts; count++)
+    user_list = dlt_daemon_find_users_list(daemon, daemon->ecuid, verbose);
+    if (user_list == NULL)
     {
-        context = &(daemon->contexts[count]);
+        return;
+    }
+
+    for (count = 0; count < user_list->num_contexts; count++)
+    {
+        context = &(user_list->contexts[count]);
 
         if (context)
         {
@@ -1656,7 +1688,11 @@ void dlt_daemon_control_set_log_level(int sock, DltDaemon *daemon, DltDaemonLoca
     }
     else
     {
-        context=dlt_daemon_context_find(daemon, apid, ctid, verbose);
+        context = dlt_daemon_context_find(daemon,
+                                          apid,
+                                          ctid,
+                                          daemon->ecuid,
+                                          verbose);
 
         /* Set log level */
         if (context!=0)
@@ -1697,7 +1733,7 @@ void dlt_daemon_control_set_trace_status(int sock, DltDaemon *daemon, DltDaemonL
     dlt_set_id(apid, req->apid);
     dlt_set_id(ctid, req->ctid);
 
-    context=dlt_daemon_context_find(daemon, apid, ctid, verbose);
+    context=dlt_daemon_context_find(daemon, apid, ctid, daemon->ecuid, verbose);
 
     /* Set log level */
     if (context!=0)
